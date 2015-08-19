@@ -16,7 +16,6 @@
 
 package io.netty.resolver.dns;
 
-import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.ThreadLocalRandom;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -29,22 +28,19 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
-import java.util.NoSuchElementException;
 import java.util.Random;
-import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
 /**
- * Provides a sequence of DNS server addresses to {@link DnsNameResolver}.  The {@link Iterator} created by the
- * {@link Iterable}s returned by the factory methods of this class is infinite, which means {@link Iterator#hasNext()}
- * will never return {@code false} and {@link Iterator#next()} will never raise a {@link NoSuchElementException}.
+ * Provides an infinite sequence of DNS server addresses to {@link DnsNameResolver}.
  */
 @SuppressWarnings("IteratorNextCanNotThrowNoSuchElementException")
-public final class DnsServerAddresses {
+public abstract class DnsServerAddresses {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(DnsServerAddresses.class);
 
     private static final List<InetSocketAddress> DEFAULT_NAME_SERVER_LIST;
     private static final InetSocketAddress[] DEFAULT_NAME_SERVER_ARRAY;
+    private static final DnsServerAddresses DEFAULT_NAME_SERVERS;
 
     static {
         final int DNS_PORT = 53;
@@ -88,6 +84,7 @@ public final class DnsServerAddresses {
 
         DEFAULT_NAME_SERVER_LIST = Collections.unmodifiableList(defaultNameServers);
         DEFAULT_NAME_SERVER_ARRAY = defaultNameServers.toArray(new InetSocketAddress[defaultNameServers.size()]);
+        DEFAULT_NAME_SERVERS = sequential(DEFAULT_NAME_SERVER_ARRAY);
     }
 
     /**
@@ -99,15 +96,19 @@ public final class DnsServerAddresses {
      * addresses = {@link #sequential(Iterable) sequential}({@link #defaultAddresses()});
      * </pre>
      */
-    public static List<InetSocketAddress> defaultAddresses() {
+    public static List<InetSocketAddress> defaultAddressList() {
         return DEFAULT_NAME_SERVER_LIST;
     }
 
+    public static DnsServerAddresses defaultAddresses() {
+        return DEFAULT_NAME_SERVERS;
+    }
+
     /**
      * Returns an infinite {@link Iterable} of the specified DNS server addresses, whose {@link Iterator} iterates
      * the DNS server addresses in a sequential order.
      */
-    public static Iterable<InetSocketAddress> sequential(Iterable<? extends InetSocketAddress> addresses) {
+    public static DnsServerAddresses sequential(Iterable<? extends InetSocketAddress> addresses) {
         return sequential0(sanitize(addresses));
     }
 
@@ -115,44 +116,48 @@ public final class DnsServerAddresses {
      * Returns an infinite {@link Iterable} of the specified DNS server addresses, whose {@link Iterator} iterates
      * the DNS server addresses in a sequential order.
      */
-    public static Iterable<InetSocketAddress> sequential(InetSocketAddress... addresses) {
+    public static DnsServerAddresses sequential(InetSocketAddress... addresses) {
         return sequential0(sanitize(addresses));
     }
 
-    private static Iterable<InetSocketAddress> sequential0(final InetSocketAddress[] addresses) {
-        return new Iterable<InetSocketAddress>() {
-            @Override
-            public Iterator<InetSocketAddress> iterator() {
-                return new SequentialAddressIterator(addresses, 0);
-            }
-        };
-    }
-
-    /**
-     * Returns an infinite {@link Iterable} of the specified DNS server addresses, whose {@link Iterator} iterates
-     * the DNS server addresses in a shuffled order.
-     */
-    public static Iterable<InetSocketAddress> shuffled(Iterable<? extends InetSocketAddress> addresses) {
-        return shuffled0(sanitize(addresses));
-    }
-
-    /**
-     * Returns an infinite {@link Iterable} of the specified DNS server addresses, whose {@link Iterator} iterates
-     * the DNS server addresses in a shuffled order.
-     */
-    public static Iterable<InetSocketAddress> shuffled(InetSocketAddress... addresses) {
-        return shuffled0(sanitize(addresses));
-    }
-
-    private static Iterable<InetSocketAddress> shuffled0(final InetSocketAddress[] addresses) {
+    private static DnsServerAddresses sequential0(final InetSocketAddress... addresses) {
         if (addresses.length == 1) {
             return singleton(addresses[0]);
         }
 
-        return new Iterable<InetSocketAddress>() {
+        return new DefaultDnsServerAddresses("sequential", addresses) {
             @Override
-            public Iterator<InetSocketAddress> iterator() {
-                return new ShuffledAddressIterator(addresses);
+            public DnsServerAddressStream stream() {
+                return new SequentialDnsServerAddressStream(addresses, 0);
+            }
+        };
+    }
+
+    /**
+     * Returns an infinite {@link Iterable} of the specified DNS server addresses, whose {@link Iterator} iterates
+     * the DNS server addresses in a shuffled order.
+     */
+    public static DnsServerAddresses shuffled(Iterable<? extends InetSocketAddress> addresses) {
+        return shuffled0(sanitize(addresses));
+    }
+
+    /**
+     * Returns an infinite {@link Iterable} of the specified DNS server addresses, whose {@link Iterator} iterates
+     * the DNS server addresses in a shuffled order.
+     */
+    public static DnsServerAddresses shuffled(InetSocketAddress... addresses) {
+        return shuffled0(sanitize(addresses));
+    }
+
+    private static DnsServerAddresses shuffled0(final InetSocketAddress[] addresses) {
+        if (addresses.length == 1) {
+            return singleton(addresses[0]);
+        }
+
+        return new DefaultDnsServerAddresses("shuffled", addresses) {
+            @Override
+            public DnsServerAddressStream stream() {
+                return new ShuffledDnsServerAddressStream(addresses);
             }
         };
     }
@@ -164,7 +169,7 @@ public final class DnsServerAddresses {
      * will iterate from the first DNS server address, the second one will iterate from the second DNS server address,
      * and so on.
      */
-    public static Iterable<InetSocketAddress> rotational(Iterable<? extends InetSocketAddress> addresses) {
+    public static DnsServerAddresses rotational(Iterable<? extends InetSocketAddress> addresses) {
         return rotational0(sanitize(addresses));
     }
 
@@ -175,19 +180,23 @@ public final class DnsServerAddresses {
      * will iterate from the first DNS server address, the second one will iterate from the second DNS server address,
      * and so on.
      */
-    public static Iterable<InetSocketAddress> rotational(InetSocketAddress... addresses) {
+    public static DnsServerAddresses rotational(InetSocketAddress... addresses) {
         return rotational0(sanitize(addresses));
     }
 
-    private static Iterable<InetSocketAddress> rotational0(final InetSocketAddress[] addresses) {
-        return new RotationalAddresses(addresses);
+    private static DnsServerAddresses rotational0(final InetSocketAddress[] addresses) {
+        if (addresses.length == 1) {
+            return singleton(addresses[0]);
+        }
+
+        return new RotationalDnsServerAddresses(addresses);
     }
 
     /**
      * Returns an infinite {@link Iterable} of the specified DNS server address, whose {@link Iterator} always
      * return the same DNS server address.
      */
-    public static Iterable<InetSocketAddress> singleton(final InetSocketAddress address) {
+    public static DnsServerAddresses singleton(final InetSocketAddress address) {
         if (address == null) {
             throw new NullPointerException("address");
         }
@@ -195,30 +204,7 @@ public final class DnsServerAddresses {
             throw new IllegalArgumentException("cannot use an unresolved DNS server address: " + address);
         }
 
-        return new Iterable<InetSocketAddress>() {
-
-            private final Iterator<InetSocketAddress> iterator = new Iterator<InetSocketAddress>() {
-                @Override
-                public boolean hasNext() {
-                    return true;
-                }
-
-                @Override
-                public InetSocketAddress next() {
-                    return address;
-                }
-
-                @Override
-                public void remove() {
-                    throw new UnsupportedOperationException();
-                }
-            };
-
-            @Override
-            public Iterator<InetSocketAddress> iterator() {
-                return iterator;
-            }
-        };
+        return new SingletonDnsServerAddresses(address);
     }
 
     private static InetSocketAddress[] sanitize(Iterable<? extends InetSocketAddress> addresses) {
@@ -244,7 +230,7 @@ public final class DnsServerAddresses {
         }
 
         if (list.isEmpty()) {
-            return DEFAULT_NAME_SERVER_ARRAY;
+            throw new IllegalArgumentException("empty addresses");
         }
 
         return list.toArray(new InetSocketAddress[list.size()]);
@@ -273,21 +259,18 @@ public final class DnsServerAddresses {
         return list.toArray(new InetSocketAddress[list.size()]);
     }
 
-    private DnsServerAddresses() { }
+    protected DnsServerAddresses() { }
 
-    private static final class SequentialAddressIterator implements Iterator<InetSocketAddress> {
+    public abstract DnsServerAddressStream stream();
+
+    static final class SequentialDnsServerAddressStream implements DnsServerAddressStream {
 
         private final InetSocketAddress[] addresses;
         private int i;
 
-        SequentialAddressIterator(InetSocketAddress[] addresses, int startIdx) {
+        SequentialDnsServerAddressStream(InetSocketAddress[] addresses, int startIdx) {
             this.addresses = addresses;
             i = startIdx;
-        }
-
-        @Override
-        public boolean hasNext() {
-            return true;
         }
 
         @Override
@@ -301,19 +284,14 @@ public final class DnsServerAddresses {
             }
             return next;
         }
-
-        @Override
-        public void remove() {
-            throw new UnsupportedOperationException();
-        }
     }
 
-    private static final class ShuffledAddressIterator implements Iterator<InetSocketAddress> {
+    static final class ShuffledDnsServerAddressStream implements DnsServerAddressStream {
 
         private final InetSocketAddress[] addresses;
         private int i;
 
-        ShuffledAddressIterator(InetSocketAddress[] addresses) {
+        ShuffledDnsServerAddressStream(InetSocketAddress[] addresses) {
             this.addresses = addresses.clone();
 
             shuffle();
@@ -332,11 +310,6 @@ public final class DnsServerAddresses {
         }
 
         @Override
-        public boolean hasNext() {
-            return true;
-        }
-
-        @Override
         public InetSocketAddress next() {
             int i = this.i;
             InetSocketAddress next = addresses[i];
@@ -347,49 +320,6 @@ public final class DnsServerAddresses {
                 shuffle();
             }
             return next;
-        }
-
-        @Override
-        public void remove() {
-            throw new UnsupportedOperationException();
-        }
-    }
-
-    private static final class RotationalAddresses implements Iterable<InetSocketAddress> {
-
-        private static final AtomicIntegerFieldUpdater<RotationalAddresses> startIdxUpdater;
-
-        static {
-            AtomicIntegerFieldUpdater<RotationalAddresses> updater =
-                    PlatformDependent.newAtomicIntegerFieldUpdater(RotationalAddresses.class, "startIdx");
-
-            if (updater == null) {
-                updater = AtomicIntegerFieldUpdater.newUpdater(RotationalAddresses.class, "startIdx");
-            }
-
-            startIdxUpdater = updater;
-        }
-
-        private final InetSocketAddress[] addresses;
-        @SuppressWarnings("UnusedDeclaration")
-        private volatile int startIdx;
-
-        RotationalAddresses(InetSocketAddress[] addresses) {
-            this.addresses = addresses;
-        }
-
-        @Override
-        public Iterator<InetSocketAddress> iterator() {
-            for (;;) {
-                int curStartIdx = startIdx;
-                int nextStartIdx = curStartIdx + 1;
-                if (nextStartIdx >= addresses.length) {
-                    nextStartIdx = 0;
-                }
-                if (startIdxUpdater.compareAndSet(this, curStartIdx, nextStartIdx)) {
-                    return new SequentialAddressIterator(addresses, curStartIdx);
-                }
-            }
         }
     }
 }
