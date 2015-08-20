@@ -587,6 +587,11 @@ public class SslHandler extends ByteToMessageDecoder implements ChannelOutboundH
                 if (result.bytesProduced() == 0) {
                     break;
                 }
+
+                // Fix for android
+                if (result.bytesConsumed() == 0 && result.getHandshakeStatus() == HandshakeStatus.NOT_HANDSHAKING) {
+                    break;
+                }
             }
         } catch (SSLException e) {
             setHandshakeFailure(e);
